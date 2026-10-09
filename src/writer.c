@@ -184,8 +184,8 @@ coldtrace_writer_new_trace(struct coldtrace_writer *ct, size_t size)
 }
 
 
-DICE_HIDE void *
-coldtrace_writer_reserve(struct coldtrace_writer *ct, size_t size)
+static __attribute__((noinline)) void *
+reserve_slow_(struct coldtrace_writer *ct, size_t size)
 {
     struct writer_impl *impl = (struct writer_impl *)ct;
     get_trace_(impl);
@@ -203,6 +203,20 @@ coldtrace_writer_reserve(struct coldtrace_writer *ct, size_t size)
     char *ptr = (char *)(impl->buffer) + impl->offset;
     impl->offset += size;
     return ptr;
+}
+
+DICE_HIDE void *
+coldtrace_writer_reserve(struct coldtrace_writer *ct, size_t size)
+{
+    struct writer_impl *impl = (struct writer_impl *)ct;
+    // A non-NULL buffer implies an initialized writer that has not failed.
+    if (likely(impl->buffer != NULL) &&
+        likely(!coldtrace_writer_new_trace(ct, size))) {
+        char *ptr = (char *)(impl->buffer) + impl->offset;
+        impl->offset += size;
+        return ptr;
+    }
+    return reserve_slow_(ct, size);
 }
 
 DICE_HIDE void
