@@ -42,6 +42,9 @@ endif()
 add_compile_options(-fPIC -g3 -D_GNU_SOURCE -DDICE_MAIN_START_DISABLE -DDICE_MEMPOOL_USE_MMAP)
 set(CMAKE_INTERPROCEDURAL_OPTIMIZATION TRUE)
 set(DICE_MEMSET ON)
+# The interposed TSan hooks run on every memory access and function entry.
+set(OPTIONS_tsan -fno-stack-protector)
+set(OPTIONS_stacktrace -fno-stack-protector)
 
 add_subdirectory(deps/dice)
 find_package(libvsync 4.2 CONFIG)
