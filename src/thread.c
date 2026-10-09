@@ -8,6 +8,7 @@
 #include <coldtrace/thread.h>
 #include <coldtrace/writer.h>
 #include <dice/log.h>
+#include <dice/mempool.h>
 #include <dice/module.h>
 #include <dice/pubsub.h>
 #include <dice/self.h>
@@ -32,15 +33,61 @@ struct coldtrace_thread {
 
 static struct coldtrace_thread tls_key_;
 
-static inline struct coldtrace_thread *
-get_coldtrace_thread(metadata_t *md)
+/* Two-level table caching the SELF_TLS lookup by dice thread id. Dice still
+ * owns the thread objects; a slot is cleared when its thread is finalized. */
+#define THREAD_CACHE_L2_BITS 10
+#define THREAD_CACHE_L2_SIZE (1UL << THREAD_CACHE_L2_BITS)
+#define THREAD_CACHE_L1_SIZE 1024
+
+static vatomicptr_t thread_cache_[THREAD_CACHE_L1_SIZE];
+
+static inline struct coldtrace_thread **
+thread_cache_slot_(thread_id id, bool create)
+{
+    uint64_t hi = id >> THREAD_CACHE_L2_BITS;
+    if (id == NO_THREAD || hi >= THREAD_CACHE_L1_SIZE) {
+        return NULL;
+    }
+    struct coldtrace_thread **l2 = vatomicptr_read_acq(&thread_cache_[hi]);
+    if (l2 == NULL && create) {
+        size_t bytes = THREAD_CACHE_L2_SIZE * sizeof(*l2);
+        l2           = mempool_alloc(bytes);
+        if (l2 == NULL) {
+            return NULL;
+        }
+        coldtrace_memset(l2, 0, bytes);
+        void *cur = vatomicptr_cmpxchg_rel(&thread_cache_[hi], NULL, l2);
+        if (cur != NULL) {
+            mempool_free(l2);
+            l2 = cur;
+        }
+    }
+    return l2 ? &l2[id & (THREAD_CACHE_L2_SIZE - 1)] : NULL;
+}
+
+static __attribute__((noinline)) struct coldtrace_thread *
+get_coldtrace_thread_slow_(metadata_t *md)
 {
     struct coldtrace_thread *th = SELF_TLS(md, &tls_key_);
     if (!th->initd) {
         coldtrace_writer_init(&th->writer, md);
         th->initd = true;
     }
+    struct coldtrace_thread **slot = thread_cache_slot_(self_id(md), true);
+    if (slot) {
+        *slot = th;
+    }
     return th;
+}
+
+static inline struct coldtrace_thread *
+get_coldtrace_thread(metadata_t *md)
+{
+    struct coldtrace_thread **slot = thread_cache_slot_(self_id(md), false);
+    if (likely(slot != NULL && *slot != NULL)) {
+        return *slot;
+    }
+    return get_coldtrace_thread_slow_(md);
 }
 
 static inline bool
@@ -160,6 +207,12 @@ coldtrace_thread_fini(struct metadata *md)
     th->stack_size     = 0;
     th->stack_capacity = 0;
     th->stack_bottom   = 0;
+
+    // dice releases the thread object after this, so drop it from the cache
+    struct coldtrace_thread **slot = thread_cache_slot_(self_id(md), false);
+    if (slot) {
+        *slot = NULL;
+    }
 }
 
 DICE_HIDE void
