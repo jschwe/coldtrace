@@ -95,6 +95,28 @@ begin_fragment_(struct writer_impl *impl)
     impl->offset                  = sizeof(struct version_header);
 }
 
+// Creates the file of the first fragment, skipping names that already exist,
+// e.g., from an earlier writer of the same thread.
+static bool
+reserve_first_file_(struct writer_impl *impl)
+{
+    const char *pattern = coldtrace_get_file_pattern();
+    char file_name[strlen(pattern) + FORMAT_EXPANSION_SPACE];
+    for (;;) {
+        sprintf(file_name, pattern, impl->tid, impl->enumerator);
+        int fd = open(file_name, O_WRONLY | O_CREAT | O_EXCL, FILE_PERMISSIONS);
+        if (fd != -1) {
+            close(fd);
+            return true;
+        }
+        if (errno != EEXIST) {
+            log_warn("open get_trace: %s", strerror(errno));
+            return false;
+        }
+        impl->enumerator++;
+    }
+}
+
 static bool
 ensure_buffer_(struct writer_impl *impl)
 {
@@ -122,6 +144,11 @@ ensure_buffer_(struct writer_impl *impl)
         }
         begin_fragment_(impl);
         return true;
+    }
+
+    if (!reserve_first_file_(impl)) {
+        impl->failed = true;
+        return false;
     }
 
     // Allocate the trace buffer once and reuse it for every fragment
