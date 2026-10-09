@@ -163,8 +163,8 @@ def connect_device():
     
     if not targets:
         raise ConnectionError("No OpenHarmony devices found.")
-        
-    device = hdc.connect(target=targets[0])
+
+    device = hdc.connect(target=os.environ.get("HDC_TARGET") or targets[0])
     print(f"--> Connected to: {device.target}")
     return device
 
